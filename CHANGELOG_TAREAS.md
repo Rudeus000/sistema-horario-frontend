@@ -14,10 +14,148 @@ Este documento contiene todas las tareas y mejoras pendientes que el equipo de d
 
 ## 📋 Tabla de Contenidos
 
+0. [Estructura Actual de la Base de Datos](#0-estructura-actual-de-la-base-de-datos)
 1. [Frontend - Página de Horarios Manuales](#1-frontend---página-de-horarios-manuales)
 2. [Frontend - Módulo de Reportes](#2-frontend---módulo-de-reportes)
 3. [Backend - Migración a Supabase](#3-backend---migración-a-supabase)
 4. [Backend - Carga Masiva desde Excel](#4-backend---carga-masiva-desde-excel)
+
+---
+
+## 0. Estructura Actual de la Base de Datos
+
+### 📊 Resumen de la Arquitectura
+
+La base de datos actual está implementada en **PostgreSQL** y sigue una arquitectura modular organizada en 4 módulos principales:
+
+#### Módulo 1: Academic Setup (`academic_setup_*`)
+Gestiona toda la estructura académica de la institución.
+
+**Tablas principales:**
+- `academic_setup_tipounidadacademica` - Tipos de unidades (Escuela, Instituto, etc.)
+- `academic_setup_unidadacademica` - Unidades académicas (Facultades, Escuelas)
+- `academic_setup_carrera` - Carreras profesionales
+- `academic_setup_ciclo` - Ciclos académicos dentro de una carrera
+- `academic_setup_seccion` - Secciones dentro de un ciclo
+- `academic_setup_periodoacademico` - Períodos académicos (semestres, trimestres)
+- `academic_setup_tiposespacio` - Tipos de espacios (Aula, Laboratorio, etc.)
+- `academic_setup_espaciosfisicos` - Espacios físicos concretos (Aula 101, Lab 201, etc.)
+- `academic_setup_especialidades` - Especialidades académicas
+- `academic_setup_materias` - Materias/Asignaturas
+- `academic_setup_carreramaterias` - Relación muchos-a-muchos: Carreras ↔ Materias
+- `academic_setup_materiaespecialidadesrequeridas` - Relación: Materias requieren Especialidades
+
+**Relaciones clave:**
+```
+UnidadAcademica (1) ──→ (N) Carrera
+Carrera (1) ──→ (N) Ciclo
+Ciclo (1) ──→ (N) Seccion
+Carrera (N) ←──→ (N) Materias (a través de CarreraMaterias)
+Materias (N) ←──→ (N) Especialidades (a través de MateriaEspecialidadesRequeridas)
+```
+
+#### Módulo 2: Users (`users_*`)
+Gestiona usuarios, docentes y sus especialidades.
+
+**Tablas principales:**
+- `users_roles` - Roles personalizados del sistema
+- `users_docentes` - Información detallada de docentes
+- `users_docenteespecialidades` - Relación: Docentes ↔ Especialidades
+- `users_sesionesusuario` - Sesiones activas de usuarios
+
+**Relaciones clave:**
+```
+auth.User (1) ←──→ (1) Docentes (OneToOne)
+Docentes (N) ←──→ (N) Especialidades (a través de DocenteEspecialidades)
+Docentes (N) ──→ (1) UnidadAcademica (unidad_principal)
+```
+
+**Campos importantes de `users_docentes`:**
+- `codigo_docente` - Código único del docente
+- `dni` - DNI único
+- `email` - Email único
+- `max_horas_semanales` - Límite de horas semanales
+- `tipo_contrato` - Tipo de contrato laboral
+
+#### Módulo 3: Scheduling (`scheduling_*`)
+Gestiona la programación de horarios y disponibilidad.
+
+**Tablas principales:**
+- `scheduling_bloqueshorariosdefinicion` - Definición de bloques horarios (ej: "Lunes 07:00-09:00")
+- `scheduling_grupos` - Grupos de estudiantes para materias
+- `scheduling_disponibilidaddocentes` - Disponibilidad de docentes por período
+- `scheduling_horariosasignados` - Horarios finales asignados
+- `scheduling_configuracionrestricciones` - Restricciones para la generación automática
+
+**Relaciones clave:**
+```
+Grupos (N) ←──→ (N) Materias (ManyToMany)
+Grupos (N) ──→ (1) Carrera
+Grupos (N) ──→ (1) PeriodoAcademico
+Grupos (N) ──→ (1) Docentes (docente_asignado_directamente, opcional)
+
+DisponibilidadDocentes:
+  - (N) ──→ (1) Docentes
+  - (N) ──→ (1) PeriodoAcademico
+  - (N) ──→ (1) BloquesHorariosDefinicion
+
+HorariosAsignados:
+  - (N) ──→ (1) Grupos
+  - (N) ──→ (1) Materias
+  - (N) ──→ (1) Docentes
+  - (N) ──→ (1) EspaciosFisicos
+  - (N) ──→ (1) PeriodoAcademico
+  - (N) ──→ (1) BloquesHorariosDefinicion
+```
+
+**Restricciones importantes en `scheduling_horariosasignados`:**
+- Un docente no puede tener dos clases al mismo tiempo
+- Un espacio no puede tener dos clases al mismo tiempo
+- Un grupo no puede tener dos clases al mismo tiempo
+- Una materia de un grupo no se puede programar dos veces en el mismo bloque
+
+#### Módulo 4: Django Standard (`auth_*`, `django_*`)
+Tablas estándar de Django para autenticación y framework.
+
+**Tablas principales:**
+- `auth_user` - Usuarios del sistema
+- `auth_group` - Grupos de usuarios
+- `auth_permission` - Permisos
+- `django_content_type` - Metadatos de modelos
+- `django_migrations` - Historial de migraciones
+- `django_session` - Sesiones
+- `django_admin_log` - Logs del admin
+
+### 🔑 Claves Primarias y Foráneas
+
+**Patrón de nomenclatura:**
+- Claves primarias: `{tabla}_id` (ej: `carrera_id`, `docente_id`)
+- Claves foráneas: `{tabla}_id` (ej: `unidad_id`, `periodo_id`)
+- Todas las PKs son `AutoField` (auto-incrementales)
+
+### 📐 Relaciones Many-to-Many
+
+Las relaciones muchos-a-muchos se implementan mediante tablas intermedias:
+- `academic_setup_carreramaterias` - Carreras ↔ Materias
+- `academic_setup_materiaespecialidadesrequeridas` - Materias ↔ Especialidades
+- `users_docenteespecialidades` - Docentes ↔ Especialidades
+- `scheduling_grupos_materias` - Grupos ↔ Materias (tabla automática de Django)
+
+### ⚠️ Consideraciones para Migración a Supabase
+
+1. **Compatibilidad**: Supabase usa PostgreSQL, por lo que la migración es directa
+2. **Constraints**: Todas las restricciones `unique_together` deben preservarse
+3. **Foreign Keys**: Todas las relaciones FK deben mantenerse
+4. **Índices**: Django crea índices automáticamente, verificar en Supabase
+5. **Triggers**: Si hay triggers personalizados, deben migrarse
+6. **Sequences**: Las secuencias de auto-increment deben configurarse correctamente
+
+### 📝 Notas Técnicas
+
+- **Encoding**: UTF-8 para soportar caracteres especiales
+- **Timezone**: Configurado para `America/Lima` (Perú)
+- **Case Sensitivity**: Los nombres de tablas y columnas son case-sensitive en PostgreSQL
+- **Naming Convention**: Django usa snake_case para nombres de tablas y campos
 
 ---
 
