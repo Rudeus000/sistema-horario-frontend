@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import client from "@/utils/axiosClient";
@@ -62,6 +62,8 @@ const HorarioAuto = () => {
   const [generacionResult, setGeneracionResult] = useState<GeneracionResponse | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [generacionProgress, setGeneracionProgress] = useState(0);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const loadPeriodos = async () => {
@@ -83,20 +85,43 @@ const HorarioAuto = () => {
     loadPeriodos();
   }, []);
 
+  // Cleanup de intervalos y timeouts al desmontar el componente
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleGenerarHorario = async () => {
     if (!selectedPeriodo) {
       toast.error("Seleccione un periodo para generar el horario");
       return;
     }
     
+    // Limpiar intervalos previos si existen
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+    
     setIsGenerating(true);
     setGeneracionProgress(0);
     
     // Start progress simulation
-    const progressInterval = setInterval(() => {
+    progressIntervalRef.current = setInterval(() => {
       setGeneracionProgress(prev => {
         if (prev >= 90) {
-          clearInterval(progressInterval);
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
           return prev;
         }
         return prev + Math.random() * 10;
@@ -109,18 +134,25 @@ const HorarioAuto = () => {
       const response = await client.post('scheduling/acciones-horario/generar-horario-automatico/', formData);
       
       setGeneracionResult(response.data);
-      clearInterval(progressInterval);
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
       setGeneracionProgress(100);
       
       // Wait for progress bar to complete, then show modal
-      setTimeout(() => {
+      timeoutRef.current = setTimeout(() => {
         setModalOpen(true);
+        timeoutRef.current = null;
       }, 500);
       
     } catch (error) {
       console.error("Error generando horario:", error);
       toast.error("Error al generar el horario");
-      clearInterval(progressInterval);
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
     } finally {
       setIsGenerating(false);
     }
