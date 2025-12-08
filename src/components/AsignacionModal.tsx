@@ -19,7 +19,7 @@ import { Docente, Aula, HorarioAsignado, BloqueHorario, DisponibilidadDocente, M
 interface AsignacionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (docenteId: number, aulaId: number) => void;
+  onSave: (docenteId: number, aulaId: number, diaSemana?: number, bloqueId?: number) => void;
   materiaId: number;
   materiaNombre: string;
   bloqueId: number;
@@ -33,6 +33,9 @@ interface AsignacionModalProps {
   disponibilidades: DisponibilidadDocente[];
   materias: MateriaDetalle[];
   grupo: Grupo | null;
+  // Nuevos props para modo edición
+  isEditMode?: boolean;
+  horarioEditando?: HorarioAsignado | null;
 }
 
 export const AsignacionModal = ({
@@ -41,8 +44,8 @@ export const AsignacionModal = ({
   onSave,
   materiaId,
   materiaNombre,
-  bloqueId,
-  bloqueNombre,
+  bloqueId: initialBloqueId,
+  bloqueNombre: initialBloqueNombre,
   periodoId,
   allPeriodSchedules,
   aulas,
@@ -51,21 +54,41 @@ export const AsignacionModal = ({
   disponibilidades,
   materias,
   grupo,
+  isEditMode = false,
+  horarioEditando = null,
 }: AsignacionModalProps) => {
   const [selectedDocente, setSelectedDocente] = useState<number | null>(null);
   const [selectedAula, setSelectedAula] = useState<number | null>(null);
+  // Estados para día y bloque cuando está en modo edición
+  const [selectedDia, setSelectedDia] = useState<number | null>(null);
+  const [selectedBloque, setSelectedBloque] = useState<number | null>(null);
+  
+  // Bloque y día actuales (pueden cambiar si está en modo edición)
+  const currentBloqueId = isEditMode && selectedBloque ? selectedBloque : initialBloqueId;
+  const currentDiaSemana = isEditMode && selectedDia ? selectedDia : (bloques.find(b => b.bloque_def_id === currentBloqueId)?.dia_semana ?? null);
   
   // Reset selections when modal opens
   useEffect(() => {
     if (isOpen) {
-      setSelectedDocente(null);
-      setSelectedAula(null);
+      if (isEditMode && horarioEditando) {
+        // En modo edición, cargar los valores actuales
+        setSelectedDocente(horarioEditando.docente);
+        setSelectedAula(horarioEditando.espacio);
+        setSelectedDia(horarioEditando.dia_semana);
+        setSelectedBloque(horarioEditando.bloque_horario);
+      } else {
+        // En modo creación, resetear todo
+        setSelectedDocente(null);
+        setSelectedAula(null);
+        setSelectedDia(null);
+        setSelectedBloque(null);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, isEditMode, horarioEditando]);
   
   // Lógica de filtrado con useMemo para eficiencia
   const availableDocentes = useMemo(() => {
-    if (!bloqueId || !materiaId) {
+    if (!currentBloqueId || !materiaId || !currentDiaSemana) {
       return [];
     }
     // Encontrar la materia para obtener sus requisitos
@@ -76,19 +99,24 @@ export const AsignacionModal = ({
     const requiredSpecialtyIds = new Set(
       materiaActual.especialidades_detalle?.map(e => e.especialidad_id) || []
     );
-    // Obtener el día de la semana del bloque
-    const bloqueActual = bloques.find(b => b.bloque_def_id === bloqueId);
-    const diaSemana = bloqueActual?.dia_semana;
     // 1. Docentes disponibles explícitamente para este bloque y periodo
     const docentesDisponiblesIds = new Set(
       disponibilidades
-        .filter(d => d.bloque_horario === bloqueId && d.periodo === periodoId && d.esta_disponible)
+        .filter(d => d.bloque_horario === currentBloqueId && d.periodo === periodoId && d.esta_disponible && d.dia_semana === currentDiaSemana)
         .map(d => d.docente)
     );
     // 2. Docentes ocupados en este bloque, día y periodo
+    // Excluir el horario que se está editando si está en modo edición
     const docentesOcupadosIds = new Set(
       allPeriodSchedules
-        .filter(h => h.bloque_horario === bloqueId && h.dia_semana === diaSemana && h.periodo === periodoId)
+        .filter(h => {
+          const isSameBlockAndDay = h.bloque_horario === currentBloqueId && h.dia_semana === currentDiaSemana && h.periodo === periodoId;
+          // Si estamos editando, excluir el horario actual de los conflictos
+          if (isEditMode && horarioEditando) {
+            return isSameBlockAndDay && h.horario_id !== horarioEditando.horario_id;
+          }
+          return isSameBlockAndDay;
+        })
         .map(h => h.docente)
     );
     // Filtrar la lista completa de docentes
@@ -104,18 +132,19 @@ export const AsignacionModal = ({
       return isAvailable && isNotBusy && hasRequiredSpecialty;
     });
     return docentesFiltrados;
-  }, [bloqueId, materiaId, periodoId, disponibilidades, docentes, materias, allPeriodSchedules, bloques]);
+  }, [currentBloqueId, currentDiaSemana, materiaId, periodoId, disponibilidades, docentes, materias, allPeriodSchedules, bloques, isEditMode, horarioEditando]);
 
   const availableAulas = useMemo(() => {
     console.log("=== INICIO FILTRADO DE AULAS ===");
     console.log("Parámetros recibidos:");
-    console.log("- bloqueId:", bloqueId);
+    console.log("- bloqueId:", currentBloqueId);
+    console.log("- diaSemana:", currentDiaSemana);
     console.log("- materiaId:", materiaId);
     console.log("- Total aulas:", aulas.length);
     console.log("- Total horarios del período:", allPeriodSchedules.length);
     
-    if(!bloqueId || !materiaId) {
-      console.log("❌ Faltan bloqueId o materiaId");
+    if(!currentBloqueId || !materiaId || !currentDiaSemana) {
+      console.log("❌ Faltan bloqueId, diaSemana o materiaId");
       return [];
     }
 
@@ -133,13 +162,21 @@ export const AsignacionModal = ({
     
     const requiredSpaceTypeId = materiaActual.requiere_tipo_espacio_especifico;
 
-    // Encontrar aulas ocupadas en este bloque específico
+    // Encontrar aulas ocupadas en este bloque y día específico
+    // Excluir el horario que se está editando si está en modo edición
     const aulasOcupadasIds = new Set(
       allPeriodSchedules
-        .filter(h => h.bloque_horario === bloqueId)
+        .filter(h => {
+          const isSameBlockAndDay = h.bloque_horario === currentBloqueId && h.dia_semana === currentDiaSemana;
+          // Si estamos editando, excluir el horario actual de los conflictos
+          if (isEditMode && horarioEditando) {
+            return isSameBlockAndDay && h.horario_id !== horarioEditando.horario_id;
+          }
+          return isSameBlockAndDay;
+        })
         .map(h => h.espacio)
     );
-    console.log("🚫 Aulas ocupadas en bloque", bloqueId, ":", Array.from(aulasOcupadasIds));
+    console.log("🚫 Aulas ocupadas en bloque", currentBloqueId, "día", currentDiaSemana, ":", Array.from(aulasOcupadasIds));
 
     // Mostrar todas las aulas disponibles con sus tipos
     console.log("📋 Todas las aulas disponibles:");
@@ -186,11 +223,17 @@ export const AsignacionModal = ({
     
     console.log("=== FIN FILTRADO DE AULAS ===\n");
     return aulasFiltradas;
-  }, [bloqueId, materiaId, allPeriodSchedules, aulas, materias]);
+  }, [currentBloqueId, currentDiaSemana, materiaId, allPeriodSchedules, aulas, materias, isEditMode, horarioEditando]);
   
   const handleSave = () => {
+    // Validar que si está en modo edición, tenga día y bloque seleccionados
+    if (isEditMode && (!selectedDia || !selectedBloque)) {
+      toast.error("Debe seleccionar día y bloque horario para editar");
+      return;
+    }
+
     // Nueva validación de turno
-    const bloqueActual = bloques.find(b => b.bloque_def_id === bloqueId);
+    const bloqueActual = bloques.find(b => b.bloque_def_id === currentBloqueId);
     if (grupo && bloqueActual && grupo.turno_preferente) {
       const turno = grupo.turno_preferente.toLowerCase();
       const horaInicio = parseInt(bloqueActual.hora_inicio.split(':')[0], 10);
@@ -206,22 +249,31 @@ export const AsignacionModal = ({
     }
 
     if (selectedDocente && selectedAula) {
-      onSave(selectedDocente, selectedAula);
+      // Si está en modo edición, pasar también día y bloque
+      if (isEditMode) {
+        onSave(selectedDocente, selectedAula, selectedDia ?? undefined, selectedBloque ?? undefined);
+      } else {
+        onSave(selectedDocente, selectedAula);
+      }
     }
   };
 
-  // Verificar si hay problemas con los filtros
+  // Verificar si hay problemas con los filtros (solo si hay un bloque y día seleccionados)
   const materiaActual = materias.find(m => m.materia_id === materiaId);
-  const hasAulaProblem = materiaActual?.requiere_tipo_espacio_especifico && availableAulas.length === 0;
-  const hasDocenteProblem = materiaActual?.especialidades_detalle?.length > 0 && availableDocentes.length === 0;
+  const hasAulaProblem = currentBloqueId && currentDiaSemana && materiaActual?.requiere_tipo_espacio_especifico && availableAulas.length === 0;
+  const hasDocenteProblem = currentBloqueId && currentDiaSemana && materiaActual?.especialidades_detalle?.length > 0 && availableDocentes.length === 0;
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Asignar Docente y Aula</DialogTitle>
+          <DialogTitle>{isEditMode ? 'Editar Asignación' : 'Asignar Docente y Aula'}</DialogTitle>
           <DialogDescription>
-            Asignando <span className="font-semibold text-academic-primary">{materiaNombre}</span> en el bloque <span className="font-semibold text-academic-primary">{bloqueNombre}</span>.
+            {isEditMode ? (
+              <>Editando asignación de <span className="font-semibold text-academic-primary">{materiaNombre}</span>.</>
+            ) : (
+              <>Asignando <span className="font-semibold text-academic-primary">{materiaNombre}</span> en el bloque <span className="font-semibold text-academic-primary">{initialBloqueNombre}</span>.</>
+            )}
           </DialogDescription>
         </DialogHeader>
         
@@ -244,6 +296,64 @@ export const AsignacionModal = ({
         
         <div className="grid gap-4 py-4">
           <>
+            {/* Selectores de día y bloque solo en modo edición */}
+            {isEditMode && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="dia">Día de la Semana</Label>
+                  <Select 
+                    value={selectedDia?.toString() || ""} 
+                    onValueChange={(value) => {
+                      const dia = Number(value);
+                      setSelectedDia(dia);
+                      // Resetear bloque cuando cambia el día
+                      setSelectedBloque(null);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar día" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[
+                        { id: 1, nombre: "Lunes" },
+                        { id: 2, nombre: "Martes" },
+                        { id: 3, nombre: "Miércoles" },
+                        { id: 4, nombre: "Jueves" },
+                        { id: 5, nombre: "Viernes" },
+                        { id: 6, nombre: "Sábado" },
+                      ].map((dia) => (
+                        <SelectItem key={dia.id} value={dia.id.toString()}>
+                          {dia.nombre}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="bloque">Bloque Horario</Label>
+                  <Select 
+                    value={selectedBloque?.toString() || ""} 
+                    onValueChange={(value) => setSelectedBloque(Number(value))}
+                    disabled={!selectedDia}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={selectedDia ? "Seleccionar bloque" : "Seleccione primero un día"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {bloques
+                        .filter(b => b.dia_semana === selectedDia)
+                        .map((bloque) => (
+                          <SelectItem key={bloque.bloque_def_id} value={bloque.bloque_def_id.toString()}>
+                            {bloque.nombre_bloque} ({bloque.hora_inicio} - {bloque.hora_fin})
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+            
             <div className="space-y-2">
               <Label htmlFor="docente">Docente Disponible ({availableDocentes.length})</Label>
               <Select onValueChange={(value) => setSelectedDocente(Number(value))}>
@@ -309,8 +419,15 @@ export const AsignacionModal = ({
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button onClick={handleSave} disabled={!selectedDocente || !selectedAula}>
-            Guardar Asignación
+          <Button 
+            onClick={handleSave} 
+            disabled={
+              !selectedDocente || 
+              !selectedAula || 
+              (isEditMode && (!selectedDia || !selectedBloque))
+            }
+          >
+            {isEditMode ? 'Guardar Cambios' : 'Guardar Asignación'}
           </Button>
         </DialogFooter>
       </DialogContent>

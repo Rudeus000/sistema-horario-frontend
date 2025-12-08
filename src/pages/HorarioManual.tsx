@@ -422,23 +422,29 @@ const HorarioManual = () => {
   };
 
   // Función para guardar la edición
-  const handleSaveEdicion = async (docenteId: number, aulaId: number) => {
+  const handleSaveEdicion = async (docenteId: number, aulaId: number, diaSemana?: number, bloqueId?: number) => {
     if (!horarioEditando || !selectedGrupo || !selectedPeriodo) {
       toast.error("Faltan datos para la edición.");
       return;
     }
-    const bloqueActual = bloques.find(b => b.bloque_def_id === asignacionPendiente?.bloqueId);
+    
+    // Si se proporcionaron día y bloque, usarlos; si no, usar los valores actuales
+    const nuevoDiaSemana = diaSemana ?? horarioEditando.dia_semana;
+    const nuevoBloqueId = bloqueId ?? horarioEditando.bloque_horario;
+    
+    const bloqueActual = bloques.find(b => b.bloque_def_id === nuevoBloqueId);
     if (!bloqueActual) {
       toast.error("No se pudo encontrar la información del bloque horario.");
       return;
     }
+    
     setIsSaving(true);
     try {
       const actualizacion = {
         docente: docenteId,
         espacio: aulaId,
-        bloque_horario: asignacionPendiente?.bloqueId,
-        dia_semana: bloqueActual.dia_semana,
+        bloque_horario: nuevoBloqueId,
+        dia_semana: nuevoDiaSemana,
       };
       const response = await client.patch(`scheduling/horarios-asignados/${horarioEditando.horario_id}/`, actualizacion);
       const horarioActualizado: HorarioAsignado = response.data;
@@ -832,7 +838,7 @@ const HorarioManual = () => {
                             const grupo = grupos.find(g => g.grupo_id === horario.grupo);
                             // Corrección: buscar la materia por el ID de la asignación
                             const materia = grupo?.materias_detalle?.find(m => m.materia_id === horario.materia)?.nombre_materia
-                              || (horario as any).materia_detalle?.nombre_materia
+                              || materias.find(m => m.materia_id === horario.materia)?.nombre_materia
                               || 'N/A';
                             return (
                               <tr key={horario.horario_id} className="border-b hover:bg-gray-50">
@@ -881,11 +887,12 @@ const HorarioManual = () => {
         const grupoSeleccionado = grupos.find(g => g.grupo_id === selectedGrupo);
         const materiaEnGrupo = grupoSeleccionado?.materias_detalle?.find(m => m.materia_id === asignacionPendiente.materiaId);
         const materiasDelGrupo = grupoSeleccionado?.materias_detalle ?? [];
+        const isEditMode = !!horarioEditando;
         return (
           <AsignacionModal 
             isOpen={isModalOpen}
             onClose={() => { setIsModalOpen(false); setHorarioEditando(null); setAsignacionPendiente(null); }}
-            onSave={horarioEditando ? handleSaveEdicion : handleSaveAsignacion}
+            onSave={isEditMode ? handleSaveEdicion : handleSaveAsignacion}
             materiaId={asignacionPendiente.materiaId}
             materiaNombre={materiaEnGrupo?.nombre_materia ?? 'Desconocida'}
             bloqueId={asignacionPendiente.bloqueId}
@@ -900,6 +907,8 @@ const HorarioManual = () => {
             disponibilidades={allPeriodAvailabilities}
             materias={materiasDelGrupo}
             grupo={selectedGrupo ? grupos.find(g => g.grupo_id === selectedGrupo) ?? null : null}
+            isEditMode={isEditMode}
+            horarioEditando={horarioEditando}
           />
         );
       })()}
