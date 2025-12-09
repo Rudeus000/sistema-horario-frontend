@@ -139,6 +139,41 @@ const stringToColor = (str: string) => {
   return `hsla(${hue}, 80%, 85%, 0.85)`;
 };
 
+// Convert HSL to RGB array for jsPDF
+const hslToRgb = (hslString: string): [number, number, number] => {
+  // Parse HSL string like "hsla(120, 80%, 85%, 0.85)"
+  const match = hslString.match(/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%/);
+  if (!match) return [255, 255, 255]; // Default to white
+  
+  const h = parseInt(match[1]) / 360;
+  const s = parseInt(match[2]) / 100;
+  const l = parseInt(match[3]) / 100;
+  
+  let r, g, b;
+  
+  if (s === 0) {
+    r = g = b = l; // achromatic
+  } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+};
+
 const ReportesHorarios = () => {
   const { user, role } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
@@ -362,15 +397,89 @@ const ReportesHorarios = () => {
         }
       };
       loadGruposYMaterias();
+    } else if (selectedUnidad && selectedPeriodo && !selectedCarrera) {
+      // Si hay unidad pero no carrera específica, cargar todos los grupos de todas las carreras de la unidad
+      const loadAllGruposFromUnidad = async () => {
+        try {
+          // Usar carreras ya cargadas si están disponibles, sino cargarlas
+          let carrerasParaCargar = carreras;
+          
+          if (carreras.length === 0) {
+            const carrerasResponse = await fetchData<{ results: Carrera[] }>(`academic-setup/carreras/?unidad=${selectedUnidad}`);
+            carrerasParaCargar = carrerasResponse?.results ?? [];
+          }
+          
+          // Si no hay carreras, no hay grupos que cargar
+          if (carrerasParaCargar.length === 0) {
+            setGrupos([]);
+            return;
+          }
+
+          // Cargar grupos de todas las carreras en paralelo (más rápido)
+          const gruposPromises = carrerasParaCargar.map(carrera =>
+            fetchData<{ results: Grupo[] }>(`scheduling/grupos/?carrera=${carrera.carrera_id}&periodo=${selectedPeriodo}`)
+              .catch(err => {
+                console.warn(`Error cargando grupos de carrera ${carrera.carrera_id}:`, err);
+                return { results: [] };
+              })
+          );
+          
+          const gruposResponses = await Promise.all(gruposPromises);
+          const todosLosGrupos: Grupo[] = [];
+          
+          gruposResponses.forEach(response => {
+            const gruposData = response?.results ?? [];
+            if (Array.isArray(gruposData)) {
+              todosLosGrupos.push(...gruposData);
+            }
+          });
+          
+          setGrupos(todosLosGrupos);
+          setSelectedGrupo(null);
+        } catch (error) {
+          console.error("Error loading grupos from unidad:", error);
+          toast.error("Error al cargar los grupos de la unidad");
+          setGrupos([]);
+        }
+      };
+      loadAllGruposFromUnidad();
+    } else if ((!selectedUnidad && selectedCarrera) || !selectedPeriodo) {
+      // Limpiar grupos solo si no hay unidad pero sí había carrera seleccionada, o si no hay periodo
+      setGrupos([]);
     }
-  }, [selectedCarrera, selectedPeriodo]);
+  }, [selectedCarrera, selectedPeriodo, selectedUnidad, carreras]);
   
+  // Estado para guardar todos los horarios sin filtrar
+  const [allHorariosUnfiltered, setAllHorariosUnfiltered] = useState<HorarioAsignado[]>([]);
+
   // Load horarios when filters change
   useEffect(() => {
     if (selectedPeriodo) {
       loadHorarios();
     }
-  }, [selectedPeriodo, selectedGrupo, selectedDocente, selectedAula, selectedCarrera, activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPeriodo, selectedGrupo, selectedDocente, selectedAula, selectedCarrera, selectedUnidad, activeTab]);
+  
+  // Aplicar filtro de grupos cuando grupos cambien (para filtro por unidad) - sin recargar
+  useEffect(() => {
+    if (selectedPeriodo && allHorariosUnfiltered.length > 0) {
+      if (selectedUnidad && !selectedCarrera && grupos.length > 0) {
+        // Aplicar filtro directamente sobre los horarios ya cargados (sin recargar)
+        const gruposIds = grupos.map(g => g.grupo_id);
+        const horariosFiltrados = allHorariosUnfiltered.filter(h => gruposIds.includes(h.grupo));
+        setHorarios(horariosFiltrados);
+      } else if (selectedCarrera && grupos.length > 0) {
+        // Aplicar filtro por carrera también sin recargar
+        const gruposIds = grupos.map(g => g.grupo_id);
+        const horariosFiltrados = allHorariosUnfiltered.filter(h => gruposIds.includes(h.grupo));
+        setHorarios(horariosFiltrados);
+      } else if (!selectedUnidad && !selectedCarrera) {
+        // Si no hay filtros de unidad/carrera, mostrar todos
+        setHorarios(allHorariosUnfiltered);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grupos, selectedUnidad, selectedCarrera, allHorariosUnfiltered]);
   
   // Selección automática para docentes
   useEffect(() => {
@@ -385,6 +494,7 @@ const ReportesHorarios = () => {
     setIsLoading(true);
     setHorarios([]); // Limpiar horarios antes de cargar
     setHorariosCeldas([]); // Limpiar celdas
+    setAllHorariosUnfiltered([]); // Limpiar horarios sin filtrar
 
     if (!selectedPeriodo) {
         setIsLoading(false);
@@ -404,9 +514,6 @@ const ReportesHorarios = () => {
     if (selectedAula) {
         endpoint += `&espacio=${selectedAula}`;
     }
-    // Si hay carrera seleccionada, filtrar por grupos de esa carrera
-    // Nota: Esto requiere que el backend soporte filtrado por carrera o
-    // filtrar en el cliente después de cargar
 
     try {
       const response = await client.get<HorarioAsignado[]>(endpoint);
@@ -416,12 +523,28 @@ const ReportesHorarios = () => {
           console.error("La respuesta de la API de horarios no es un array:", horariosData);
           toast.error("Formato de datos de horarios inesperado.");
           setHorarios([]);
+          setAllHorariosUnfiltered([]);
       } else {
-          // Filtrar por carrera en el cliente si está seleccionada
-          // (ya que el backend puede no soportar este filtro directamente)
-          if (selectedCarrera && grupos.length > 0) {
-            const gruposIds = grupos.map(g => g.grupo_id);
-            horariosData = horariosData.filter(h => gruposIds.includes(h.grupo));
+          // Guardar todos los horarios sin filtrar
+          setAllHorariosUnfiltered(horariosData);
+          
+          // Aplicar filtros en el cliente
+          // Si hay unidad seleccionada pero no carrera, filtrar por todos los grupos de la unidad
+          if (selectedUnidad && !selectedCarrera) {
+            if (grupos.length > 0) {
+              const gruposIds = grupos.map(g => g.grupo_id);
+              horariosData = horariosData.filter(h => gruposIds.includes(h.grupo));
+            } else {
+              // Si no hay grupos aún, mostrar todos los horarios temporalmente
+              // El filtro se aplicará cuando grupos se actualice
+            }
+          }
+          // Si hay carrera seleccionada, filtrar por grupos de esa carrera
+          else if (selectedCarrera) {
+            if (grupos.length > 0) {
+              const gruposIds = grupos.map(g => g.grupo_id);
+              horariosData = horariosData.filter(h => gruposIds.includes(h.grupo));
+            }
           }
           setHorarios(horariosData);
       }
@@ -430,6 +553,7 @@ const ReportesHorarios = () => {
       console.error("Error loading horarios:", error);
       toast.error("No se pudieron cargar los horarios.");
       setHorarios([]);
+      setAllHorariosUnfiltered([]);
     } finally {
       setIsLoading(false);
     }
@@ -591,8 +715,13 @@ const ReportesHorarios = () => {
         return minutosA - minutosB;
       });
       
+      // Crear un mapa para almacenar colores de celdas [fila, columna] -> color
+      const cellColors: Map<string, [number, number, number]> = new Map();
+      let rowIndex = 0;
+      
       bloquesOrdenados.forEach(bloque => {
         const row: any[] = [`${bloque.hora_inicio.slice(0, 5)} - ${bloque.hora_fin.slice(0, 5)}`];
+        let colIndex = 1; // Empezar en 1 porque 0 es la columna de HORARIO
         
         diasSemana.forEach(dia => {
           // Buscar celda directamente por diaId y bloqueId
@@ -609,11 +738,17 @@ const ReportesHorarios = () => {
             if (activeTab !== 'docente') texto += `\n${celda.docente}`;
             if (activeTab !== 'aula') texto += `\nAula: ${celda.aula}`;
             row.push(texto);
+            
+            // Guardar el color de esta celda (agregando 1 porque el head cuenta como fila 0)
+            const rgbColor = hslToRgb(celda.color);
+            cellColors.set(`${rowIndex + 1},${colIndex}`, rgbColor);
           } else {
             row.push('');
           }
+          colIndex++;
         });
         tableData.push(row);
+        rowIndex++;
       });
       
       // Generar tabla
@@ -624,17 +759,33 @@ const ReportesHorarios = () => {
         styles: { 
           fontSize: 7,
           cellPadding: 2,
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
         },
         headStyles: {
           fillColor: [100, 100, 100],
           textColor: 255,
           fontStyle: 'bold',
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
         },
         columnStyles: {
-          0: { cellWidth: 30, fontStyle: 'bold' },
+          0: { cellWidth: 30, fontStyle: 'bold', lineWidth: 0.1, lineColor: [0, 0, 0] },
         },
         margin: { top: 35, left: 10, right: 10 },
         tableWidth: 'wrap',
+        didParseCell: (data: any) => {
+          // Aplicar color de fondo directamente en el estilo de la celda
+          if (data.section === 'body' && data.column.index > 0) {
+            const key = `${data.row.index},${data.column.index}`;
+            const color = cellColors.get(key);
+            if (color) {
+              // Establecer el fillColor directamente en el estilo de la celda
+              data.cell.styles.fillColor = color;
+              data.cell.styles.textColor = [0, 0, 0]; // Asegurar texto negro
+            }
+          }
+        },
       });
       
       // Generar y descargar
@@ -701,8 +852,14 @@ const ReportesHorarios = () => {
         return minutosA - minutosB;
       });
       
+      // Crear un mapa para almacenar colores de celdas [fila, columna] -> color
+      const cellColors: Map<string, [number, number, number]> = new Map();
+      let rowIndex = 0;
+      
       bloquesOrdenados.forEach(bloque => {
         const row: any[] = [`${bloque.hora_inicio.slice(0, 5)} - ${bloque.hora_fin.slice(0, 5)}`];
+        let colIndex = 1; // Empezar en 1 porque 0 es la columna de HORARIO
+        
         diasSemana.forEach(dia => {
           // Buscar bloques que coinciden con esta hora
           const bloquesConEstaHora = bloques.filter(
@@ -715,17 +872,24 @@ const ReportesHorarios = () => {
             if (h.diaId !== dia.id) return false;
             return bloquesConEstaHora.some(b => b.bloque_def_id === h.bloqueId);
           });
+          
           if (celda) {
             let texto = celda.materia;
             if (activeTab !== 'grupo') texto += `\nGrupo: ${celda.grupo}`;
             if (activeTab !== 'docente') texto += `\n${celda.docente}`;
             if (activeTab !== 'aula') texto += `\nAula: ${celda.aula}`;
             row.push(texto);
+            
+            // Guardar el color de esta celda (agregando 1 porque el head cuenta como fila 0)
+            const rgbColor = hslToRgb(celda.color);
+            cellColors.set(`${rowIndex + 1},${colIndex}`, rgbColor);
           } else {
             row.push('');
           }
+          colIndex++;
         });
         tableData.push(row);
+        rowIndex++;
       });
       
       autoTable(doc, {
@@ -735,16 +899,32 @@ const ReportesHorarios = () => {
         styles: { 
           fontSize: 7,
           cellPadding: 2,
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
         },
         headStyles: {
           fillColor: [100, 100, 100],
           textColor: 255,
           fontStyle: 'bold',
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
         },
         columnStyles: {
-          0: { cellWidth: 30, fontStyle: 'bold' },
+          0: { cellWidth: 30, fontStyle: 'bold', lineWidth: 0.1, lineColor: [0, 0, 0] },
         },
         margin: { top: 35, left: 10, right: 10 },
+        didParseCell: (data: any) => {
+          // Aplicar color de fondo directamente en el estilo de la celda
+          if (data.section === 'body' && data.column.index > 0) {
+            const key = `${data.row.index},${data.column.index}`;
+            const color = cellColors.get(key);
+            if (color) {
+              // Establecer el fillColor directamente en el estilo de la celda
+              data.cell.styles.fillColor = color;
+              data.cell.styles.textColor = [0, 0, 0]; // Asegurar texto negro
+            }
+          }
+        },
       });
       
       const blob = doc.output('blob');
