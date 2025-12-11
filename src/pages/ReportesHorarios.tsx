@@ -16,13 +16,31 @@ import {
   Building,
   UserSquare,
   Loader2,
-  Filter
+  Filter,
+  Eye,
+  X
 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from '@/contexts/AuthContext';
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface Periodo {
   periodo_id: number;
@@ -66,6 +84,8 @@ interface BloqueHorario {
   hora_inicio: string;
   hora_fin: string;
   orden: number;
+  dia_semana: number;
+  nombre_bloque?: string;
 }
 
 interface Materia {
@@ -119,12 +139,51 @@ const stringToColor = (str: string) => {
   return `hsla(${hue}, 80%, 85%, 0.85)`;
 };
 
+// Convert HSL to RGB array for jsPDF
+const hslToRgb = (hslString: string): [number, number, number] => {
+  // Parse HSL string like "hsla(120, 80%, 85%, 0.85)"
+  const match = hslString.match(/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%/);
+  if (!match) return [255, 255, 255]; // Default to white
+  
+  const h = parseInt(match[1]) / 360;
+  const s = parseInt(match[2]) / 100;
+  const l = parseInt(match[3]) / 100;
+  
+  let r, g, b;
+  
+  if (s === 0) {
+    r = g = b = l; // achromatic
+  } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+};
+
 const ReportesHorarios = () => {
   const { user, role } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [activeTab, setActiveTab] = useState("grupo");
+  const [showPreviewPDF, setShowPreviewPDF] = useState(false);
+  const [previewPDFUrl, setPreviewPDFUrl] = useState<string | null>(null);
+  const [selectedHorarioForPDF, setSelectedHorarioForPDF] = useState<number | null>(null);
   
   const [periodos, setPeriodos] = useState<Periodo[]>([]);
   const [unidades, setUnidades] = useState<UnidadAcademica[]>([]);
@@ -145,6 +204,111 @@ const ReportesHorarios = () => {
   
   const [horariosCeldas, setHorariosCeldas] = useState<HorarioCelda[]>([]);
   const printRef = useRef<HTMLDivElement>(null);
+  
+  // Persistencia de filtros
+  const STORAGE_KEY = 'reportes_horarios_filtros';
+  
+  // Cargar filtros guardados después de que los datos iniciales se carguen
+  useEffect(() => {
+    if (periodos.length > 0 && unidades.length > 0) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.periodo && periodos.some(p => p.periodo_id === parsed.periodo)) {
+            setSelectedPeriodo(parsed.periodo);
+          }
+          if (parsed.unidad && unidades.some(u => u.unidad_id === parsed.unidad)) {
+            setSelectedUnidad(parsed.unidad);
+          }
+          if (parsed.activeTab) {
+            setActiveTab(parsed.activeTab);
+          }
+        } catch (e) {
+          console.error('Error loading saved filters:', e);
+        }
+      }
+    }
+  }, [periodos.length, unidades.length]);
+  
+  // Cargar filtros de carrera, grupo, docente, aula cuando sus datos estén disponibles
+  useEffect(() => {
+    if (carreras.length > 0) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.carrera && carreras.some(c => c.carrera_id === parsed.carrera)) {
+            setSelectedCarrera(parsed.carrera);
+          }
+        } catch (e) {
+          // Ignorar errores
+        }
+      }
+    }
+  }, [carreras.length]);
+  
+  useEffect(() => {
+    if (grupos.length > 0) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.grupo && grupos.some(g => g.grupo_id === parsed.grupo)) {
+            setSelectedGrupo(parsed.grupo);
+          }
+        } catch (e) {
+          // Ignorar errores
+        }
+      }
+    }
+  }, [grupos.length]);
+  
+  useEffect(() => {
+    if (docentes.length > 0) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.docente && docentes.some(d => d.docente_id === parsed.docente)) {
+            setSelectedDocente(parsed.docente);
+          }
+        } catch (e) {
+          // Ignorar errores
+        }
+      }
+    }
+  }, [docentes.length]);
+  
+  useEffect(() => {
+    if (aulas.length > 0) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.aula && aulas.some(a => a.espacio_id === parsed.aula)) {
+            setSelectedAula(parsed.aula);
+          }
+        } catch (e) {
+          // Ignorar errores
+        }
+      }
+    }
+  }, [aulas.length]);
+  
+  // Guardar filtros cuando cambian
+  useEffect(() => {
+    const filters = {
+      periodo: selectedPeriodo,
+      unidad: selectedUnidad,
+      carrera: selectedCarrera,
+      grupo: selectedGrupo,
+      docente: selectedDocente,
+      aula: selectedAula,
+      activeTab,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filters));
+  }, [selectedPeriodo, selectedUnidad, selectedCarrera, selectedGrupo, selectedDocente, selectedAula, activeTab]);
   
   useEffect(() => {
     const loadInitialData = async () => {
@@ -233,15 +397,89 @@ const ReportesHorarios = () => {
         }
       };
       loadGruposYMaterias();
+    } else if (selectedUnidad && selectedPeriodo && !selectedCarrera) {
+      // Si hay unidad pero no carrera específica, cargar todos los grupos de todas las carreras de la unidad
+      const loadAllGruposFromUnidad = async () => {
+        try {
+          // Usar carreras ya cargadas si están disponibles, sino cargarlas
+          let carrerasParaCargar = carreras;
+          
+          if (carreras.length === 0) {
+            const carrerasResponse = await fetchData<{ results: Carrera[] }>(`academic-setup/carreras/?unidad=${selectedUnidad}`);
+            carrerasParaCargar = carrerasResponse?.results ?? [];
+          }
+          
+          // Si no hay carreras, no hay grupos que cargar
+          if (carrerasParaCargar.length === 0) {
+            setGrupos([]);
+            return;
+          }
+
+          // Cargar grupos de todas las carreras en paralelo (más rápido)
+          const gruposPromises = carrerasParaCargar.map(carrera =>
+            fetchData<{ results: Grupo[] }>(`scheduling/grupos/?carrera=${carrera.carrera_id}&periodo=${selectedPeriodo}`)
+              .catch(err => {
+                console.warn(`Error cargando grupos de carrera ${carrera.carrera_id}:`, err);
+                return { results: [] };
+              })
+          );
+          
+          const gruposResponses = await Promise.all(gruposPromises);
+          const todosLosGrupos: Grupo[] = [];
+          
+          gruposResponses.forEach(response => {
+            const gruposData = response?.results ?? [];
+            if (Array.isArray(gruposData)) {
+              todosLosGrupos.push(...gruposData);
+            }
+          });
+          
+          setGrupos(todosLosGrupos);
+          setSelectedGrupo(null);
+        } catch (error) {
+          console.error("Error loading grupos from unidad:", error);
+          toast.error("Error al cargar los grupos de la unidad");
+          setGrupos([]);
+        }
+      };
+      loadAllGruposFromUnidad();
+    } else if ((!selectedUnidad && selectedCarrera) || !selectedPeriodo) {
+      // Limpiar grupos solo si no hay unidad pero sí había carrera seleccionada, o si no hay periodo
+      setGrupos([]);
     }
-  }, [selectedCarrera, selectedPeriodo]);
+  }, [selectedCarrera, selectedPeriodo, selectedUnidad, carreras]);
   
+  // Estado para guardar todos los horarios sin filtrar
+  const [allHorariosUnfiltered, setAllHorariosUnfiltered] = useState<HorarioAsignado[]>([]);
+
   // Load horarios when filters change
   useEffect(() => {
     if (selectedPeriodo) {
       loadHorarios();
     }
-  }, [selectedPeriodo, selectedGrupo, selectedDocente, selectedAula, activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPeriodo, selectedGrupo, selectedDocente, selectedAula, selectedCarrera, selectedUnidad, activeTab]);
+  
+  // Aplicar filtro de grupos cuando grupos cambien (para filtro por unidad) - sin recargar
+  useEffect(() => {
+    if (selectedPeriodo && allHorariosUnfiltered.length > 0) {
+      if (selectedUnidad && !selectedCarrera && grupos.length > 0) {
+        // Aplicar filtro directamente sobre los horarios ya cargados (sin recargar)
+        const gruposIds = grupos.map(g => g.grupo_id);
+        const horariosFiltrados = allHorariosUnfiltered.filter(h => gruposIds.includes(h.grupo));
+        setHorarios(horariosFiltrados);
+      } else if (selectedCarrera && grupos.length > 0) {
+        // Aplicar filtro por carrera también sin recargar
+        const gruposIds = grupos.map(g => g.grupo_id);
+        const horariosFiltrados = allHorariosUnfiltered.filter(h => gruposIds.includes(h.grupo));
+        setHorarios(horariosFiltrados);
+      } else if (!selectedUnidad && !selectedCarrera) {
+        // Si no hay filtros de unidad/carrera, mostrar todos
+        setHorarios(allHorariosUnfiltered);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grupos, selectedUnidad, selectedCarrera, allHorariosUnfiltered]);
   
   // Selección automática para docentes
   useEffect(() => {
@@ -256,6 +494,7 @@ const ReportesHorarios = () => {
     setIsLoading(true);
     setHorarios([]); // Limpiar horarios antes de cargar
     setHorariosCeldas([]); // Limpiar celdas
+    setAllHorariosUnfiltered([]); // Limpiar horarios sin filtrar
 
     if (!selectedPeriodo) {
         setIsLoading(false);
@@ -264,24 +503,49 @@ const ReportesHorarios = () => {
 
     let endpoint = `scheduling/horarios-asignados/?periodo=${selectedPeriodo}`;
     
-    // Construir el endpoint basado en la pestaña activa y el filtro seleccionado
-    if (activeTab === 'grupo' && selectedGrupo) {
+    // Construir el endpoint con filtros combinados (no solo uno por tab)
+    // Permitir múltiples filtros simultáneos
+    if (selectedGrupo) {
         endpoint += `&grupo=${selectedGrupo}`;
-    } else if (activeTab === 'docente' && selectedDocente) {
+    }
+    if (selectedDocente) {
         endpoint += `&docente=${selectedDocente}`;
-    } else if (activeTab === 'aula' && selectedAula) {
+    }
+    if (selectedAula) {
         endpoint += `&espacio=${selectedAula}`;
     }
 
     try {
       const response = await client.get<HorarioAsignado[]>(endpoint);
-      const horariosData = response.data ?? [];
+      let horariosData = response.data ?? [];
       
       if (!Array.isArray(horariosData)) {
           console.error("La respuesta de la API de horarios no es un array:", horariosData);
           toast.error("Formato de datos de horarios inesperado.");
           setHorarios([]);
+          setAllHorariosUnfiltered([]);
       } else {
+          // Guardar todos los horarios sin filtrar
+          setAllHorariosUnfiltered(horariosData);
+          
+          // Aplicar filtros en el cliente
+          // Si hay unidad seleccionada pero no carrera, filtrar por todos los grupos de la unidad
+          if (selectedUnidad && !selectedCarrera) {
+            if (grupos.length > 0) {
+              const gruposIds = grupos.map(g => g.grupo_id);
+              horariosData = horariosData.filter(h => gruposIds.includes(h.grupo));
+            } else {
+              // Si no hay grupos aún, mostrar todos los horarios temporalmente
+              // El filtro se aplicará cuando grupos se actualice
+            }
+          }
+          // Si hay carrera seleccionada, filtrar por grupos de esa carrera
+          else if (selectedCarrera) {
+            if (grupos.length > 0) {
+              const gruposIds = grupos.map(g => g.grupo_id);
+              horariosData = horariosData.filter(h => gruposIds.includes(h.grupo));
+            }
+          }
           setHorarios(horariosData);
       }
 
@@ -289,6 +553,7 @@ const ReportesHorarios = () => {
       console.error("Error loading horarios:", error);
       toast.error("No se pudieron cargar los horarios.");
       setHorarios([]);
+      setAllHorariosUnfiltered([]);
     } finally {
       setIsLoading(false);
     }
@@ -394,6 +659,301 @@ const ReportesHorarios = () => {
     }
   };
   
+  // Función para generar PDF
+  const generatePDF = (horarioId?: number) => {
+    setIsGeneratingPDF(true);
+    try {
+      const doc = new jsPDF('landscape', 'mm', 'a4');
+      
+      // Obtener datos del horario a mostrar
+      let horariosToShow = horarios;
+      if (horarioId) {
+        // Si se especifica un horario, filtrar por grupo/docente/aula según el tipo
+        const horarioSeleccionado = horarios.find(h => {
+          if (activeTab === 'grupo' && h.grupo === horarioId) return true;
+          if (activeTab === 'docente' && h.docente === horarioId) return true;
+          if (activeTab === 'aula' && h.espacio === horarioId) return true;
+          return false;
+        });
+        if (horarioSeleccionado) {
+          // Filtrar todos los horarios del mismo grupo/docente/aula
+          if (activeTab === 'grupo') {
+            horariosToShow = horarios.filter(h => h.grupo === horarioSeleccionado.grupo);
+          } else if (activeTab === 'docente') {
+            horariosToShow = horarios.filter(h => h.docente === horarioSeleccionado.docente);
+          } else if (activeTab === 'aula') {
+            horariosToShow = horarios.filter(h => h.espacio === horarioSeleccionado.espacio);
+          }
+        }
+      }
+      
+      // Título
+      const periodo = periodos.find(p => p.periodo_id === selectedPeriodo);
+      const titulo = activeTab === 'grupo' 
+        ? `Horario del Grupo: ${grupos.find(g => g.grupo_id === selectedGrupo)?.codigo_grupo || 'N/A'}`
+        : activeTab === 'docente'
+        ? `Horario del Docente: ${docentes.find(d => d.docente_id === selectedDocente)?.nombres || 'N/A'} ${docentes.find(d => d.docente_id === selectedDocente)?.apellidos || ''}`
+        : `Horario del Aula: ${aulas.find(a => a.espacio_id === selectedAula)?.nombre_espacio || 'N/A'}`;
+      
+      doc.setFontSize(16);
+      doc.text('Horario Académico', 148, 15, { align: 'center' });
+      doc.setFontSize(12);
+      doc.text(titulo, 148, 22, { align: 'center' });
+      if (periodo) {
+        doc.text(`Período: ${periodo.nombre_periodo}`, 148, 28, { align: 'center' });
+      }
+      
+      // Preparar datos para la tabla
+      const tableData: any[][] = [];
+      
+      // Ordenar bloques por hora de inicio
+      const bloquesOrdenados = [...bloquesUnicos].sort((a, b) => {
+        const horaA = a.hora_inicio.split(':').map(Number);
+        const horaB = b.hora_inicio.split(':').map(Number);
+        const minutosA = horaA[0] * 60 + horaA[1];
+        const minutosB = horaB[0] * 60 + horaB[1];
+        return minutosA - minutosB;
+      });
+      
+      // Crear un mapa para almacenar colores de celdas [fila, columna] -> color
+      const cellColors: Map<string, [number, number, number]> = new Map();
+      let rowIndex = 0;
+      
+      bloquesOrdenados.forEach(bloque => {
+        const row: any[] = [`${bloque.hora_inicio.slice(0, 5)} - ${bloque.hora_fin.slice(0, 5)}`];
+        let colIndex = 1; // Empezar en 1 porque 0 es la columna de HORARIO
+        
+        diasSemana.forEach(dia => {
+          // Buscar celda directamente por diaId y bloqueId
+          const celda = horariosCeldas.find(
+            h => h.diaId === dia.id && 
+            bloques.some(b => b.bloque_def_id === h.bloqueId && 
+              b.hora_inicio === bloque.hora_inicio && 
+              b.hora_fin === bloque.hora_fin)
+          );
+          
+          if (celda) {
+            let texto = celda.materia;
+            if (activeTab !== 'grupo') texto += `\nGrupo: ${celda.grupo}`;
+            if (activeTab !== 'docente') texto += `\n${celda.docente}`;
+            if (activeTab !== 'aula') texto += `\nAula: ${celda.aula}`;
+            row.push(texto);
+            
+            // Guardar el color de esta celda (agregando 1 porque el head cuenta como fila 0)
+            const rgbColor = hslToRgb(celda.color);
+            cellColors.set(`${rowIndex + 1},${colIndex}`, rgbColor);
+          } else {
+            row.push('');
+          }
+          colIndex++;
+        });
+        tableData.push(row);
+        rowIndex++;
+      });
+      
+      // Generar tabla
+      autoTable(doc, {
+        head: [['HORARIO', ...diasSemana.map(d => d.nombre.toUpperCase())]],
+        body: tableData,
+        startY: 35,
+        styles: { 
+          fontSize: 7,
+          cellPadding: 2,
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
+        },
+        headStyles: {
+          fillColor: [100, 100, 100],
+          textColor: 255,
+          fontStyle: 'bold',
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
+        },
+        columnStyles: {
+          0: { cellWidth: 30, fontStyle: 'bold', lineWidth: 0.1, lineColor: [0, 0, 0] },
+        },
+        margin: { top: 35, left: 10, right: 10 },
+        tableWidth: 'wrap',
+        didParseCell: (data: any) => {
+          // Aplicar color de fondo directamente en el estilo de la celda
+          if (data.section === 'body' && data.column.index > 0) {
+            const key = `${data.row.index},${data.column.index}`;
+            const color = cellColors.get(key);
+            if (color) {
+              // Establecer el fillColor directamente en el estilo de la celda
+              data.cell.styles.fillColor = color;
+              data.cell.styles.textColor = [0, 0, 0]; // Asegurar texto negro
+            }
+          }
+        },
+      });
+      
+      // Generar y descargar
+      const periodoName = periodo?.nombre_periodo || 'periodo';
+      const currentDate = new Date().toISOString().slice(0, 10);
+      const fileName = `horario_${activeTab}_${periodoName}_${currentDate}.pdf`;
+      doc.save(fileName);
+      
+      toast.success('PDF generado correctamente');
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      toast.error('Error al generar el PDF');
+    } finally {
+      setIsGeneratingPDF(false);
+    }
+  };
+  
+  // Función para vista previa de PDF
+  const handlePreviewPDF = (horarioId?: number) => {
+    try {
+      const doc = new jsPDF('landscape', 'mm', 'a4');
+      
+      // Misma lógica que generatePDF pero sin descargar
+      let horariosToShow = horarios;
+      if (horarioId) {
+        const horarioSeleccionado = horarios.find(h => {
+          if (activeTab === 'grupo' && h.grupo === horarioId) return true;
+          if (activeTab === 'docente' && h.docente === horarioId) return true;
+          if (activeTab === 'aula' && h.espacio === horarioId) return true;
+          return false;
+        });
+        if (horarioSeleccionado) {
+          if (activeTab === 'grupo') {
+            horariosToShow = horarios.filter(h => h.grupo === horarioSeleccionado.grupo);
+          } else if (activeTab === 'docente') {
+            horariosToShow = horarios.filter(h => h.docente === horarioSeleccionado.docente);
+          } else if (activeTab === 'aula') {
+            horariosToShow = horarios.filter(h => h.espacio === horarioSeleccionado.espacio);
+          }
+        }
+      }
+      
+      const periodo = periodos.find(p => p.periodo_id === selectedPeriodo);
+      const titulo = activeTab === 'grupo' 
+        ? `Horario del Grupo: ${grupos.find(g => g.grupo_id === selectedGrupo)?.codigo_grupo || 'N/A'}`
+        : activeTab === 'docente'
+        ? `Horario del Docente: ${docentes.find(d => d.docente_id === selectedDocente)?.nombres || 'N/A'} ${docentes.find(d => d.docente_id === selectedDocente)?.apellidos || ''}`
+        : `Horario del Aula: ${aulas.find(a => a.espacio_id === selectedAula)?.nombre_espacio || 'N/A'}`;
+      
+      doc.setFontSize(16);
+      doc.text('Horario Académico', 148, 15, { align: 'center' });
+      doc.setFontSize(12);
+      doc.text(titulo, 148, 22, { align: 'center' });
+      if (periodo) {
+        doc.text(`Período: ${periodo.nombre_periodo}`, 148, 28, { align: 'center' });
+      }
+      
+      const tableData: any[][] = [];
+      const bloquesOrdenados = [...bloquesUnicos].sort((a, b) => {
+        const horaA = a.hora_inicio.split(':').map(Number);
+        const horaB = b.hora_inicio.split(':').map(Number);
+        const minutosA = horaA[0] * 60 + horaA[1];
+        const minutosB = horaB[0] * 60 + horaB[1];
+        return minutosA - minutosB;
+      });
+      
+      // Crear un mapa para almacenar colores de celdas [fila, columna] -> color
+      const cellColors: Map<string, [number, number, number]> = new Map();
+      let rowIndex = 0;
+      
+      bloquesOrdenados.forEach(bloque => {
+        const row: any[] = [`${bloque.hora_inicio.slice(0, 5)} - ${bloque.hora_fin.slice(0, 5)}`];
+        let colIndex = 1; // Empezar en 1 porque 0 es la columna de HORARIO
+        
+        diasSemana.forEach(dia => {
+          // Buscar bloques que coinciden con esta hora
+          const bloquesConEstaHora = bloques.filter(
+            b => b.hora_inicio === bloque.hora_inicio && 
+                 b.hora_fin === bloque.hora_fin
+          );
+          
+          // Buscar la celda que coincide con este día y alguno de estos bloques
+          const celda = horariosCeldas.find(h => {
+            if (h.diaId !== dia.id) return false;
+            return bloquesConEstaHora.some(b => b.bloque_def_id === h.bloqueId);
+          });
+          
+          if (celda) {
+            let texto = celda.materia;
+            if (activeTab !== 'grupo') texto += `\nGrupo: ${celda.grupo}`;
+            if (activeTab !== 'docente') texto += `\n${celda.docente}`;
+            if (activeTab !== 'aula') texto += `\nAula: ${celda.aula}`;
+            row.push(texto);
+            
+            // Guardar el color de esta celda (agregando 1 porque el head cuenta como fila 0)
+            const rgbColor = hslToRgb(celda.color);
+            cellColors.set(`${rowIndex + 1},${colIndex}`, rgbColor);
+          } else {
+            row.push('');
+          }
+          colIndex++;
+        });
+        tableData.push(row);
+        rowIndex++;
+      });
+      
+      autoTable(doc, {
+        head: [['HORARIO', ...diasSemana.map(d => d.nombre.toUpperCase())]],
+        body: tableData,
+        startY: 35,
+        styles: { 
+          fontSize: 7,
+          cellPadding: 2,
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
+        },
+        headStyles: {
+          fillColor: [100, 100, 100],
+          textColor: 255,
+          fontStyle: 'bold',
+          lineWidth: 0.1,
+          lineColor: [0, 0, 0],
+        },
+        columnStyles: {
+          0: { cellWidth: 30, fontStyle: 'bold', lineWidth: 0.1, lineColor: [0, 0, 0] },
+        },
+        margin: { top: 35, left: 10, right: 10 },
+        didParseCell: (data: any) => {
+          // Aplicar color de fondo directamente en el estilo de la celda
+          if (data.section === 'body' && data.column.index > 0) {
+            const key = `${data.row.index},${data.column.index}`;
+            const color = cellColors.get(key);
+            if (color) {
+              // Establecer el fillColor directamente en el estilo de la celda
+              data.cell.styles.fillColor = color;
+              data.cell.styles.textColor = [0, 0, 0]; // Asegurar texto negro
+            }
+          }
+        },
+      });
+      
+      const blob = doc.output('blob');
+      const url = URL.createObjectURL(blob);
+      setPreviewPDFUrl(url);
+      setSelectedHorarioForPDF(horarioId || null);
+      setShowPreviewPDF(true);
+    } catch (error) {
+      console.error('Error generating preview:', error);
+      toast.error('Error al generar la vista previa');
+    }
+  };
+  
+  // Función para limpiar todos los filtros
+  const handleClearFilters = () => {
+    if (periodos.length > 0) {
+      setSelectedPeriodo(periodos[0].periodo_id);
+    }
+    if (unidades.length > 0) {
+      setSelectedUnidad(unidades[0].unidad_id);
+    }
+    setSelectedCarrera(null);
+    setSelectedGrupo(null);
+    setSelectedDocente(null);
+    setSelectedAula(null);
+    setActiveTab('grupo');
+    toast.success('Filtros limpiados');
+  };
+  
   const getHorarioPorDiaBloque = (diaId: number, bloqueId: number): HorarioCelda | null => {
     return horariosCeldas.find(h => h.diaId === diaId && h.bloqueId === bloqueId) || null;
   };
@@ -428,16 +988,30 @@ const ReportesHorarios = () => {
   }, [horarios]);
 
   // Agrupar bloques horarios por franja horaria única (ignorando el día)
+  // Usar los bloques de los horarios para asegurar que tenemos todos los necesarios
+  const bloquesDeHorarios = horarios.map(h => {
+    const bloque = bloques.find(b => b.bloque_def_id === h.bloque_horario);
+    return bloque;
+  }).filter((b): b is BloqueHorario => b !== undefined);
+  
   const bloquesUnicos = Array.from(
     new Map(
-      bloques.map(b => [`${b.hora_inicio}-${b.hora_fin}`, b])
+      [...bloquesDeHorarios, ...bloques].map(b => [`${b.hora_inicio}-${b.hora_fin}`, b])
     ).values()
-  );
+  ).sort((a, b) => {
+    const horaA = a.hora_inicio.split(':').map(Number);
+    const horaB = b.hora_inicio.split(':').map(Number);
+    const minutosA = horaA[0] * 60 + horaA[1];
+    const minutosB = horaB[0] * 60 + horaB[1];
+    return minutosA - minutosB;
+  });
 
+  // Limpiar horarios solo cuando cambian filtros que requieren recarga completa
   useEffect(() => {
-    setHorarios([]);
-    setHorariosCeldas([]);
-  }, [selectedUnidad, selectedCarrera, selectedGrupo]);
+    if (selectedUnidad || selectedCarrera) {
+      // No limpiar inmediatamente, dejar que loadHorarios maneje la recarga
+    }
+  }, [selectedUnidad, selectedCarrera]);
 
   return (
     <div className="container mx-auto py-6 bg-gray-100 min-h-screen">
@@ -495,6 +1069,16 @@ const ReportesHorarios = () => {
                   Imprimir
                 </Button>
                 <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => handlePreviewPDF()}
+                  disabled={isGeneratingPDF || horarios.length === 0}
+                  className="flex items-center"
+                >
+                  <Eye className="h-4 w-4 mr-2" />
+                  Vista Previa PDF
+                </Button>
+                <Button 
                   variant="default" 
                   size="sm"
                   onClick={handleExportToExcel}
@@ -508,153 +1092,220 @@ const ReportesHorarios = () => {
                   )}
                   Exportar a Excel
                 </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={handleClearFilters}
+                  className="flex items-center"
+                >
+                  <X className="h-4 w-4 mr-2" />
+                  Limpiar Filtros
+                </Button>
               </div>
             </div>
             
             <div className="grid md:grid-cols-3 gap-4 mb-4">
-              <div>
-                <Label htmlFor="periodo">Periodo Académico</Label>
-                <Select 
-                  value={selectedPeriodo?.toString() || ""}
-                  onValueChange={(value) => setSelectedPeriodo(Number(value))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar periodo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {periodos.filter(p => p && p.periodo_id != null).map((periodo) => (
-                      <SelectItem key={periodo.periodo_id} value={periodo.periodo_id.toString()}>
-                        {periodo.nombre_periodo}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="periodo">Periodo Académico</Label>
+                      <Select 
+                        value={selectedPeriodo?.toString() || ""}
+                        onValueChange={(value) => setSelectedPeriodo(Number(value))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar periodo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {periodos.filter(p => p && p.periodo_id != null).map((periodo) => (
+                            <SelectItem key={periodo.periodo_id} value={periodo.periodo_id.toString()}>
+                              {periodo.nombre_periodo}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Filtra los horarios por período académico activo</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               
-              <div>
-                <Label htmlFor="unidad">Unidad Académica</Label>
-                <Select 
-                  value={selectedUnidad?.toString() || ""}
-                  onValueChange={(value) => setSelectedUnidad(Number(value))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar unidad" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {unidades.filter(u => u && u.unidad_id != null).map((unidad) => (
-                      <SelectItem key={unidad.unidad_id} value={unidad.unidad_id.toString()}>
-                        {unidad.nombre_unidad}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="unidad">Unidad Académica</Label>
+                      <Select 
+                        value={selectedUnidad?.toString() || ""}
+                        onValueChange={(value) => setSelectedUnidad(Number(value))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar unidad" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {unidades.filter(u => u && u.unidad_id != null).map((unidad) => (
+                            <SelectItem key={unidad.unidad_id} value={unidad.unidad_id.toString()}>
+                              {unidad.nombre_unidad}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Selecciona la unidad académica para filtrar carreras, docentes y aulas</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               
-              <div>
-                <Label htmlFor="carrera">Carrera</Label>
-                <Select 
-                  value={selectedCarrera?.toString() || "all"}
-                  onValueChange={(value) => setSelectedCarrera(value === "all" ? null : Number(value))}
-                  disabled={!selectedUnidad}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar carrera" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas las carreras</SelectItem>
-                    {carreras.filter(c => c && c.carrera_id != null).map((carrera) => (
-                      <SelectItem key={carrera.carrera_id} value={carrera.carrera_id.toString()}>
-                        {carrera.nombre_carrera}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="carrera">Carrera</Label>
+                      <Select 
+                        value={selectedCarrera?.toString() || "all"}
+                        onValueChange={(value) => setSelectedCarrera(value === "all" ? null : Number(value))}
+                        disabled={!selectedUnidad}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar carrera" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todas las carreras</SelectItem>
+                          {carreras.filter(c => c && c.carrera_id != null).map((carrera) => (
+                            <SelectItem key={carrera.carrera_id} value={carrera.carrera_id.toString()}>
+                              {carrera.nombre_carrera}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Filtra por carrera específica o muestra todas las carreras de la unidad</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </div>
             
-            <TabsContent value="grupo" className="mt-0">
-              <div>
-                <Label htmlFor="grupo">Grupo/Sección</Label>
-                <Select 
-                  value={selectedGrupo?.toString() || "all"}
-                  onValueChange={(value) => {
-                    setSelectedGrupo(value === "all" ? null : Number(value));
-                    setSelectedDocente(null);
-                    setSelectedAula(null);
-                  }}
-                  disabled={!selectedCarrera}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar grupo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos los grupos</SelectItem>
-                    {grupos.filter(g => g && g.grupo_id != null).map((grupo) => {
-                      // Since a group can have multiple materias, we simplify the display.
-                      // A better approach might be a multi-level select or a different UI.
-                      return (
-                        <SelectItem key={grupo.grupo_id} value={grupo.grupo_id.toString()}>
-                          {grupo.codigo_grupo}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
+            {/* Contador de resultados */}
+            {!isLoading && (
+              <div className="mb-4 text-sm text-gray-600 flex items-center justify-between">
+                <span>
+                  {horarios.length} horario{horarios.length !== 1 ? 's' : ''} encontrado{horarios.length !== 1 ? 's' : ''}
+                </span>
               </div>
+            )}
+            
+            <TabsContent value="grupo" className="mt-0">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="grupo">Grupo/Sección</Label>
+                      <Select 
+                        value={selectedGrupo?.toString() || "all"}
+                        onValueChange={(value) => {
+                          setSelectedGrupo(value === "all" ? null : Number(value));
+                          // No limpiar otros filtros para permitir combinaciones
+                        }}
+                        disabled={!selectedCarrera}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar grupo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todos los grupos</SelectItem>
+                          {grupos.filter(g => g && g.grupo_id != null).map((grupo) => {
+                            return (
+                              <SelectItem key={grupo.grupo_id} value={grupo.grupo_id.toString()}>
+                                {grupo.codigo_grupo}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Filtra los horarios por grupo específico. Puede combinarse con otros filtros.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </TabsContent>
             
             <TabsContent value="docente" className="mt-0">
-              <div>
-                <Label htmlFor="docente">Docente</Label>
-                <Select 
-                  value={selectedDocente?.toString() || "all"}
-                  onValueChange={(value) => {
-                    setSelectedDocente(value === "all" ? null : Number(value));
-                    setSelectedGrupo(null);
-                    setSelectedAula(null);
-                  }}
-                  disabled={String(role).toLowerCase() === 'docente' || !selectedUnidad}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar docente" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos los docentes</SelectItem>
-                    {docentes.filter(d => d && d.docente_id != null).map((docente) => (
-                      <SelectItem key={docente.docente_id} value={docente.docente_id.toString()}>
-                        {docente.nombres} {docente.apellidos}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="docente">Docente</Label>
+                      <Select 
+                        value={selectedDocente?.toString() || "all"}
+                        onValueChange={(value) => {
+                          setSelectedDocente(value === "all" ? null : Number(value));
+                          // No limpiar otros filtros para permitir combinaciones
+                        }}
+                        disabled={String(role).toLowerCase() === 'docente' || !selectedUnidad}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar docente" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todos los docentes</SelectItem>
+                          {docentes.filter(d => d && d.docente_id != null).map((docente) => (
+                            <SelectItem key={docente.docente_id} value={docente.docente_id.toString()}>
+                              {docente.nombres} {docente.apellidos}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Filtra los horarios por docente específico. Puede combinarse con otros filtros.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </TabsContent>
             
             <TabsContent value="aula" className="mt-0">
-              <div>
-                <Label htmlFor="aula">Aula</Label>
-                <Select 
-                  value={selectedAula?.toString() || "all"}
-                  onValueChange={(value) => {
-                    setSelectedAula(value === "all" ? null : Number(value));
-                    setSelectedGrupo(null);
-                    setSelectedDocente(null);
-                  }}
-                  disabled={!selectedUnidad}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccionar aula" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas las aulas</SelectItem>
-                    {aulas.filter(a => a && a.espacio_id != null).map((aula) => (
-                      <SelectItem key={aula.espacio_id} value={aula.espacio_id.toString()}>
-                        {aula.nombre_espacio}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <Label htmlFor="aula">Aula</Label>
+                      <Select 
+                        value={selectedAula?.toString() || "all"}
+                        onValueChange={(value) => {
+                          setSelectedAula(value === "all" ? null : Number(value));
+                          // No limpiar otros filtros para permitir combinaciones
+                        }}
+                        disabled={!selectedUnidad}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar aula" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todas las aulas</SelectItem>
+                          {aulas.filter(a => a && a.espacio_id != null).map((aula) => (
+                            <SelectItem key={aula.espacio_id} value={aula.espacio_id.toString()}>
+                              {aula.nombre_espacio}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Filtra los horarios por aula específica. Puede combinarse con otros filtros.</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </TabsContent>
           </Tabs>
         </CardContent>
@@ -700,12 +1351,18 @@ const ReportesHorarios = () => {
                           {bloque.hora_inicio.slice(0, 5)} - {bloque.hora_fin.slice(0, 5)}
                         </td>
                         {diasSemana.map((dia) => {
-                          const bloqueDia = bloques.find(
-                            b => b.hora_inicio === bloque.hora_inicio && b.hora_fin === bloque.hora_fin && b.dia_semana === dia.id
+                          // Buscar directamente en horariosCeldas usando diaId y bloqueId
+                          // Primero encontrar todos los bloques que coinciden con esta hora
+                          const bloquesConEstaHora = bloques.filter(
+                            b => b.hora_inicio === bloque.hora_inicio && 
+                                 b.hora_fin === bloque.hora_fin
                           );
-                          const celda = horariosCeldas.find(
-                            h => h.diaId === dia.id && h.bloqueId === (bloqueDia ? bloqueDia.bloque_def_id : -1)
-                          );
+                          
+                          // Buscar la celda que coincide con este día y alguno de estos bloques
+                          const celda = horariosCeldas.find(h => {
+                            if (h.diaId !== dia.id) return false;
+                            return bloquesConEstaHora.some(b => b.bloque_def_id === h.bloqueId);
+                          });
                           return (
                             <td key={`${dia.id}-${bloque.hora_inicio}-${bloque.hora_fin}`} className="border border-gray-300 h-24 w-40 text-center align-top p-1">
                               {celda ? (
@@ -732,6 +1389,48 @@ const ReportesHorarios = () => {
           !isLoading && <div className="text-center py-10 text-gray-500">No hay horarios asignados para los filtros seleccionados.</div>
         )
       )}
+      
+      {/* Dialog de vista previa PDF */}
+      <Dialog open={showPreviewPDF} onOpenChange={setShowPreviewPDF}>
+        <DialogContent className="max-w-5xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>Vista Previa del PDF</DialogTitle>
+            <DialogDescription>
+              Revisa el horario antes de descargarlo
+            </DialogDescription>
+          </DialogHeader>
+          <div className="w-full h-[70vh] overflow-auto">
+            {previewPDFUrl && (
+              <iframe 
+                src={previewPDFUrl} 
+                className="w-full h-full border-0"
+                title="Vista previa PDF"
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPreviewPDF(false)}>
+              Cerrar
+            </Button>
+            <Button 
+              onClick={() => {
+                if (previewPDFUrl) {
+                  const link = document.createElement('a');
+                  link.href = previewPDFUrl;
+                  const periodoName = periodos.find(p => p.periodo_id === selectedPeriodo)?.nombre_periodo || 'periodo';
+                  const currentDate = new Date().toISOString().slice(0, 10);
+                  link.download = `horario_${activeTab}_${periodoName}_${currentDate}.pdf`;
+                  link.click();
+                  toast.success('PDF descargado correctamente');
+                }
+                setShowPreviewPDF(false);
+              }}
+            >
+              Descargar PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
