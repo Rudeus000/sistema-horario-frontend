@@ -34,6 +34,7 @@ import MiHorarioDocente from "./pages/MiHorarioDocente";
 import PeriodoAcademico from "./pages/PeriodoAcademico";
 import SeleccionCarrera from "./pages/SeleccionCarrera";
 import Usuarios from "./pages/Usuarios";
+import ChatbotPage from "./pages/Chatbot";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -86,6 +87,7 @@ const App = () => (
                   <Route path="/admin/ciclos" element={<Ciclos />} />
                   <Route path="/admin/periodos-academicos" element={<PeriodoAcademico />} />
                   <Route path="/admin/seleccion-carrera" element={<SeleccionCarrera />} />
+                  <Route path="/admin/chatbot" element={<ChatbotPage />} />
                 </Route>
 
                 {/* Protected Teacher routes */}
@@ -97,6 +99,7 @@ const App = () => (
                   <Route path="/docente/disponibilidad" element={<MiDisponibilidad />} />
                   <Route path="/docente/horario" element={<MiHorarioDocente />} />
                   <Route path="/docente/exportar" element={<ReportesHorarios />} />
+                  <Route path="/docente/chatbot" element={<ChatbotPage />} />
                 </Route>
 
                 {/* Catch-all route */}

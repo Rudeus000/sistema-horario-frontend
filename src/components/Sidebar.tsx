@@ -19,7 +19,8 @@ import {
   CalendarDays,
   User,
   Shield,
-  GraduationCap
+  GraduationCap,
+  Bot
 } from 'lucide-react';
 import DarkModeToggle from './DarkModeToggle';
 import {
@@ -49,14 +50,16 @@ const Sidebar = () => {
     { name: 'Horarios Manual', path: '/admin/horarios/manual', icon: <ClipboardList className="w-5 h-5" /> },
     { name: 'Horarios Automático', path: '/admin/horarios/automatico', icon: <ClipboardCheck className="w-5 h-5" /> },
     { name: 'Restricciones', path: '/admin/restricciones', icon: <Settings className="w-5 h-5" /> },
-    { name: 'Reportes', path: '/admin/reportes', icon: <FileText className="w-5 h-5" /> }
+    { name: 'Reportes', path: '/admin/reportes', icon: <FileText className="w-5 h-5" /> },
+    { name: 'Asistente IA', path: '/admin/chatbot', icon: <Bot className="w-5 h-5" /> }
   ];
   
   const docenteLinks = [
     { name: 'Dashboard', path: '/docente/dashboard', icon: <LayoutDashboard className="w-5 h-5" /> },
     { name: 'Mi Disponibilidad', path: '/docente/disponibilidad', icon: <Clock className="w-5 h-5" /> },
     { name: 'Mi Horario', path: '/docente/horario', icon: <Calendar className="w-5 h-5" /> },
-    { name: 'Exportar Horario', path: '/docente/exportar', icon: <Download className="w-5 h-5" /> }
+    { name: 'Exportar Horario', path: '/docente/exportar', icon: <Download className="w-5 h-5" /> },
+    { name: 'Asistente IA', path: '/docente/chatbot', icon: <Bot className="w-5 h-5" /> }
   ];
   
   const links = role === 'Administrador' ? adminLinks : docenteLinks;
